@@ -1,4 +1,6 @@
+from datetime import datetime
 import os
+import boto3
 import gradio as gr
 import requests
 import time
@@ -8,6 +10,9 @@ API_MAX_RETRY = int(os.environ.get("API_MAX_RETRY", 120))
 API_ENDPOINT = os.environ.get("API_ENDPOINT", "http://127.0.0.1:20001")
 
 LOADING_TEMPLATE = '<div class="ld ld-hourglass ld-spin-fast" style="font-size:64px;color:#8da;max-width:100%;display:block;margin-left:auto;margin-right:auto;"></div>'
+OD_PRICING = ["1.212", "0.9776", "2.2420"]
+
+ec2 = boto3.client("ec2")
 
 def load_css(filename: str):
     with open(filename, 'r') as file:
@@ -50,10 +55,37 @@ def get_image_status(task_id: str):
 
     return status_output, is_complete, image_response
 
-# def update_pricing():
-#     response = requests.get(f"{API_ENDPOINT}/pricing").json()
-#     return response
+def fetch_spot_pricing():
+    response = ec2.describe_spot_price_history(
+        EndTime=datetime.now(),
+        InstanceTypes=["g5.2xlarge", "g6.2xlarge", "g6e.2xlarge"],
+        ProductDescriptions=["Linux/UNIX"],
+        StartTime=datetime.now()
+    )
 
+    prices = {}
+    for price in response["SpotPriceHistory"]:
+        instance_type = price["InstanceType"]
+        price = float(price["SpotPrice"])
+        if instance_type in prices:
+            prices[instance_type].append(price)
+        else:
+            prices[instance_type] = [price]
+    # calcuate average price for each instance type in azs
+    for instance_type, price_list in prices.items():
+        prices[instance_type] = round(sum(price_list) / len(price_list), 4)
+
+    return prices
+
+def display_pricing():
+    table = []
+    table.append(["On-Demand"] + OD_PRICING)
+
+    spot_pricing = fetch_spot_pricing()
+    print(spot_pricing)
+    table.append(["Spot", spot_pricing["g5.2xlarge"], spot_pricing["g6.2xlarge"], spot_pricing["g6e.2xlarge"]])
+
+    return table
 
 def generate_and_display_images_same_instance_type(prompt: str, instance_type: str):
 
@@ -127,32 +159,27 @@ with gr.Blocks(css=load_css("loading.min.css")) as demo:
     # Stable Diffusion on EKS demo
     """)
     prompt = gr.Textbox(label="Prompt", value="cute anime girl with massive fluffy fennec ears and a big fluffy tail blonde messy long hair blue eyes wearing a maid outfit with a long black gold leaf pattern dress and a white apron mouth open holding a fancy black forest cake with candles on top in the kitchen of an old dark Victorian mansion lit by candlelight with a bright window to the foggy forest and very expensive stuff everywhere")
+
+    pricing_table = gr.Dataframe(label="Current Pricing in us-west-2 (USD per hours)", row_count=2, headers=["Purchase Mode", "g5.2xlarge", "g6.2xlarge", "g6e.2xlarge"])
+    refresh_pricing = gr.Button("Refresh Pricing")
+    refresh_pricing.click(display_pricing, outputs=[pricing_table])
+
     with gr.Tab("Same instance type, Model Comparison"):
         instance_type = gr.Dropdown([["g5 with A10G GPU", "g5"], ["g6 with L4 GPU", "g6"], ["g6e with L40S GPU", "g6e"]], label="Backend Instance Type", value="g6e")
         generate_btn_i = gr.Button("Generate Images")
-#        with gr.Row():
-#            with gr.Column():
-#                spot_pricing_i = gr.Textbox(label="Current Spot Pricing (us-west-2)")
-#            with gr.Column():
-#                on_demand_pricing_i = gr.Textbox(label="Current On-Demand Pricing (us-west-2)")
-#            with gr.Column():
-#                refresh_pricing_i = gr.Button("Refresh Pricing")
         with gr.Row():
             with gr.Column():
                 image_i_1 = gr.HTML(label="SDXL", elem_id="image-sdxl")
                 time_i_1 = gr.Textbox(label="SDXL Response Time")
-#                cost_i_1 = gr.Textbox(label="Estimated Cost (us-west-2)")
+                cost_i_1 = gr.Textbox(label="Estimated Cost (us-west-2) with Spot instance")
             with gr.Column():
                 image_i_2 = gr.HTML(label="Flux.1 Dev", elem_id="image-flux")
                 time_i_2 = gr.Textbox(label="Flux.1 Dev Response Time")
-                # cost_i_2 = gr.Textbox(label="Estimated Cost (us-west-2)")
+                cost_i_2 = gr.Textbox(label="Estimated Cost (us-west-2) with Spot instance")
 
         generate_btn_i.click(generate_and_display_images_same_instance_type,
                         inputs=[prompt, instance_type],
                         outputs=[image_i_1, image_i_2, time_i_1, time_i_2])
-
-        # refresh_pricing_i.click(update_pricing, inputs=[spot_pricing_i, on_demand_pricing_i], outputs=[spot_pricing_i, on_demand_pricing_i])
-
 
     with gr.Tab("Same model, Instance Type Comparison"):
         model = gr.Dropdown([["Stable Diffusions XL", "sdxl"], ["Flux.1 Dev", "flux"]], label="Model", value="flux")
