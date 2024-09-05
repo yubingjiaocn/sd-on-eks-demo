@@ -26,11 +26,11 @@ logger = logging.getLogger("demo-backend")
 
 app = FastAPI()
 
-DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME", "sd-image-generation-tasks")
-SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "arn:aws:sns:us-west-2:600413481647:sdoneksStack-sdoneksStacksdNotificationOutputCfn1C3DC221-pR2LpeipULCp")
-SD_API_KEY = os.environ.get("SD_API_KEY", "bu2J4QVDxy9g3tP3aHWhW1NCvhCsya7j9yTMktRl")
-SD_API_ENDPOINT = os.environ.get("SD_API_ENDPOINT", "https://e1lcc5lji3.execute-api.us-west-2.amazonaws.com/dev/v1alpha2")
-CF_URL = os.environ.get("CF_URL", "https://d49x78c4g79qn.cloudfront.net/")
+DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME")
+SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN")
+SD_API_KEY = os.environ.get("SD_API_KEY")
+SD_API_ENDPOINT = os.environ.get("SD_API_ENDPOINT")
+CF_URL = os.environ.get("CF_URL")
 
 REQUEST_TEMPLATE = json.loads("""{
   "task": {

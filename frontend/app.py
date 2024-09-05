@@ -4,20 +4,19 @@ import boto3
 import gradio as gr
 import requests
 import time
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 
 API_POLL_INTERVAL = float(os.environ.get("API_POLL_INTERVAL", 1))  # in seconds
 API_MAX_RETRY = int(os.environ.get("API_MAX_RETRY", 120))
 API_ENDPOINT = os.environ.get("API_ENDPOINT", "http://127.0.0.1:20001")
 
-LOADING_TEMPLATE = '<div class="ld ld-hourglass ld-spin-fast" style="font-size:64px;color:#8da;max-width:100%;display:block;margin-left:auto;margin-right:auto;"></div>'
+LOADING_TEMPLATE = None
 OD_PRICING = ["1.212", "0.9776", "2.2420"]
 
 ec2 = boto3.client("ec2")
 
-def load_css(filename: str):
-    with open(filename, 'r') as file:
-        css_content = file.read()
-    return css_content
+app = FastAPI()
 
 def generate_image_same_instance_type(prompt: str, instance_type: str):
     payload = {
@@ -49,7 +48,7 @@ def get_image_status(task_id: str):
         status_output = "Error, please retry"
     elif (response.get("status") == "completed"):
         is_complete = True
-        image_response = f'<img src="{response.get("image_url")}" style="max-width:100%;">'
+        image_response = response.get("image_url")
         process_duration = response.get("process_duration")
         status_output = f"Time usage: {process_duration}s"
 
@@ -153,7 +152,7 @@ def generate_and_display_images_same_model(prompt: str, model: str):
     return image_g5, image_g6, image_g6e, status_output_g5, status_output_g6, status_output_g6e
 
 # Create Gradio interface
-with gr.Blocks(css=load_css("loading.min.css")) as demo:
+with gr.Blocks() as demo:
     gr.Markdown(
     """
     # Stable Diffusion on EKS demo
@@ -169,11 +168,11 @@ with gr.Blocks(css=load_css("loading.min.css")) as demo:
         generate_btn_i = gr.Button("Generate Images")
         with gr.Row():
             with gr.Column():
-                image_i_1 = gr.HTML(label="SDXL", elem_id="image-sdxl")
+                image_i_1 = gr.Image(label="SDXL", elem_id="image-sdxl")
                 time_i_1 = gr.Textbox(label="SDXL Response Time")
                 cost_i_1 = gr.Textbox(label="Estimated Cost (us-west-2) with Spot instance")
             with gr.Column():
-                image_i_2 = gr.HTML(label="Flux.1 Dev", elem_id="image-flux")
+                image_i_2 = gr.Image(label="Flux.1 Dev", elem_id="image-flux")
                 time_i_2 = gr.Textbox(label="Flux.1 Dev Response Time")
                 cost_i_2 = gr.Textbox(label="Estimated Cost (us-west-2) with Spot instance")
 
@@ -186,17 +185,21 @@ with gr.Blocks(css=load_css("loading.min.css")) as demo:
         generate_btn_m = gr.Button("Generate Images")
         with gr.Row():
             with gr.Column():
-                image_m_1 = gr.HTML(label="g5 Instance Type", elem_id="image-g5")
+                image_m_1 = gr.Image(label="g5 Instance Type", elem_id="image-g5")
                 time_m_1 = gr.Textbox(label="g5 Instance Type Response Time")
             with gr.Column():
-                image_m_2 = gr.HTML(label="g6 Instance Type", elem_id="image-g6")
+                image_m_2 = gr.Image(label="g6 Instance Type", elem_id="image-g6")
                 time_m_2 = gr.Textbox(label="g6 Instance Type Response Time")
             with gr.Column():
-                image_m_3 = gr.HTML(label="g6e Instance Type", elem_id="image-g6e")
+                image_m_3 = gr.Image(label="g6e Instance Type", elem_id="image-g6e")
                 time_m_3 = gr.Textbox(label="g6e Instance Type Response Time")
         generate_btn_m.click(generate_and_display_images_same_model,
                         inputs=[prompt, model],
                         outputs=[image_m_1, image_m_2, image_m_3, time_m_1, time_m_2, time_m_3])
 
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7890, show_error=True, debug=False)
+
+@app.get("/error/403.html", response_class=HTMLResponse)
+def error_403():
+    return open("403.html", "r").read()
+
+app = gr.mount_gradio_app(app, demo, path="/")
