@@ -24,15 +24,15 @@ spec:
       serviceAccountName: sd-on-eks-compare-backend
       containers:
       - name: sd-on-eks-compare-backend
-        image: 600413481647.dkr.ecr.us-west-2.amazonaws.com/sd-on-eks-compare/backend:1.0
+        image: 600413481647.dkr.ecr.us-west-2.amazonaws.com/sd-on-eks-compare/backend:1.3
         imagePullPolicy: Always
         env:
         - name: AWS_DEFAULT_REGION
           value: "us-west-2"
         - name: DYNAMODB_TABLE_NAME
           value: "sd-image-generation-tasks"
-        - name: SNS_TOPIC_ARN
-          value: "arn:aws:sns:us-west-2:600413481647:sdoneksStack-sdoneksStacksdNotificationOutputCfn1C3DC221-pR2LpeipULCp"
+        - name: SQS_OUTPUT_QUEUE_URL
+          value: "https://sqs.us-west-2.amazonaws.com/600413481647/sdoneksOutputQueue"
         - name: SD_API_KEY
           value: "bu2J4QVDxy9g3tP3aHWhW1NCvhCsya7j9yTMktRl"
         - name: SD_API_ENDPOINT

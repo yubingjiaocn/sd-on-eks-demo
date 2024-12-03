@@ -11,8 +11,17 @@ API_POLL_INTERVAL = float(os.environ.get("API_POLL_INTERVAL", 1))  # in seconds
 API_MAX_RETRY = int(os.environ.get("API_MAX_RETRY", 120))
 API_ENDPOINT = os.environ.get("API_ENDPOINT", "http://127.0.0.1:20001")
 
-LOADING_TEMPLATE = None
-OD_PRICING = ["1.212", "0.9776", "2.2420"]
+OD_PRICE = {
+    "g5.2xlarge": 1.212,
+    "g6.2xlarge": 0.9776,
+    "g6e.2xlarge": 2.2420
+}
+
+SPOT_PRICE = {
+    "g5.2xlarge": 0.0,
+    "g6.2xlarge": 0.0,
+    "g6e.2xlarge": 0.0
+}
 
 ec2 = boto3.client("ec2")
 
@@ -37,8 +46,8 @@ def generate_image_same_model(prompt: str, model: str):
 def get_image_status(task_id: str):
     response = requests.get(f"{API_ENDPOINT}/status/{task_id}").json()
     is_complete = False
-    process_duration = None
-    image_response = LOADING_TEMPLATE
+    process_duration = 0.0
+    image_response = None
     if (response.get("status") == "submitted"):
         status_output = "Queuing, please wait..."
     elif (response.get("status") == "running"):
@@ -52,9 +61,9 @@ def get_image_status(task_id: str):
         process_duration = response.get("process_duration")
         status_output = f"Time usage: {process_duration}s"
 
-    return status_output, is_complete, image_response
+    return status_output, is_complete, image_response, process_duration
 
-def fetch_spot_pricing():
+def fetch_spot_price():
     response = ec2.describe_spot_price_history(
         EndTime=datetime.now(),
         InstanceTypes=["g5.2xlarge", "g6.2xlarge", "g6e.2xlarge"],
@@ -77,12 +86,11 @@ def fetch_spot_pricing():
     return prices
 
 def display_pricing():
+    global SPOT_PRICE
     table = []
-    table.append(["On-Demand"] + OD_PRICING)
-
-    spot_pricing = fetch_spot_pricing()
-    print(spot_pricing)
-    table.append(["Spot", spot_pricing["g5.2xlarge"], spot_pricing["g6.2xlarge"], spot_pricing["g6e.2xlarge"]])
+    table.append(["On-Demand"] + OD_PRICE["g5.2xlarge"], OD_PRICE["g6.2xlarge"], OD_PRICE["g6e.2xlarge"])
+    SPOT_PRICE = fetch_spot_price()
+    table.append(["Spot", SPOT_PRICE["g5.2xlarge"], SPOT_PRICE["g6.2xlarge"], SPOT_PRICE["g6e.2xlarge"]])
 
     return table
 
@@ -94,6 +102,8 @@ def generate_and_display_images_same_instance_type(prompt: str, instance_type: s
     task_id_flux = response['task_id_flux']
     is_complete_sdxl = False
     is_complete_flux = False
+    cost_sdxl = 0.0
+    cost_flux = 0.0
     count = 0
 
     # Poll for result
@@ -103,18 +113,22 @@ def generate_and_display_images_same_instance_type(prompt: str, instance_type: s
             return None, None, "Timeout", "Timeout"
 
         if not(is_complete_sdxl):
-            status_output_sdxl, is_complete_sdxl, image_sdxl = get_image_status(task_id_sdxl)
+            status_output_sdxl, is_complete_sdxl, image_sdxl, process_duration_sdxl = get_image_status(task_id_sdxl)
+            if is_complete_sdxl:
+                cost_sdxl = process_duration_sdxl * float(SPOT_PRICE[instance_type])
 
         if not(is_complete_flux):
-            status_output_flux, is_complete_flux, image_flux = get_image_status(task_id_flux)
+            status_output_flux, is_complete_flux, image_flux, process_duration_flux = get_image_status(task_id_flux)
+            if is_complete_flux:
+                cost_flux = process_duration_flux * float(SPOT_PRICE[instance_type])
 
-        yield image_sdxl, image_flux, status_output_sdxl, status_output_flux
+        yield image_sdxl, image_flux, status_output_sdxl, status_output_flux, cost_sdxl, cost_flux
 
         if is_complete_sdxl and is_complete_flux:
             break
         time.sleep(API_POLL_INTERVAL)
 
-    return image_sdxl, image_flux, status_output_sdxl, status_output_flux
+    return image_sdxl, image_flux, status_output_sdxl, status_output_flux, cost_sdxl, cost_flux
 
 def generate_and_display_images_same_model(prompt: str, model: str):
     # Generate image
@@ -162,6 +176,7 @@ with gr.Blocks() as demo:
     pricing_table = gr.Dataframe(label="Current Pricing in us-west-2 (USD per hours)", row_count=2, headers=["Purchase Mode", "g5.2xlarge", "g6.2xlarge", "g6e.2xlarge"])
     refresh_pricing = gr.Button("Refresh Pricing")
     refresh_pricing.click(display_pricing, outputs=[pricing_table])
+    demo.load(display_pricing, outputs=[pricing_table])
 
     with gr.Tab("Same instance type, Model Comparison"):
         instance_type = gr.Dropdown([["g5 with A10G GPU", "g5"], ["g6 with L4 GPU", "g6"], ["g6e with L40S GPU", "g6e"]], label="Backend Instance Type", value="g6e")
@@ -177,8 +192,8 @@ with gr.Blocks() as demo:
                 cost_i_2 = gr.Textbox(label="Estimated Cost (us-west-2) with Spot instance")
 
         generate_btn_i.click(generate_and_display_images_same_instance_type,
-                        inputs=[prompt, instance_type],
-                        outputs=[image_i_1, image_i_2, time_i_1, time_i_2])
+                        inputs=[prompt, instance_type, pricing_table],
+                        outputs=[image_i_1, image_i_2, time_i_1, time_i_2, cost_i_1, cost_i_2])
 
     with gr.Tab("Same model, Instance Type Comparison"):
         model = gr.Dropdown([["Stable Diffusions XL", "sdxl"], ["Flux.1 Dev", "flux"]], label="Model", value="flux")

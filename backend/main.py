@@ -10,6 +10,9 @@ import httpx
 import requests
 import random
 import logging
+import asyncio
+from contextlib import asynccontextmanager
+from typing import Optional
 
 logging.basicConfig()
 logging.getLogger().setLevel(logging.ERROR)
@@ -24,10 +27,27 @@ logger.addHandler(handler)
 # Set current logger as global
 logger = logging.getLogger("demo-backend")
 
-app = FastAPI()
+# Global variable to store the background task
+sqs_polling_task = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: create background task
+    global sqs_polling_task
+    sqs_polling_task = asyncio.create_task(process_sqs_messages())
+    yield
+    # Shutdown: cancel background task
+    if sqs_polling_task:
+        sqs_polling_task.cancel()
+        try:
+            await sqs_polling_task
+        except asyncio.CancelledError:
+            logger.info("SQS polling task cancelled")
+
+app = FastAPI(lifespan=lifespan)
 
 DYNAMODB_TABLE_NAME = os.environ.get("DYNAMODB_TABLE_NAME")
-SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN")
+SQS_OUTPUT_QUEUE_URL = os.environ.get("SQS_OUTPUT_QUEUE_URL")
 SD_API_KEY = os.environ.get("SD_API_KEY")
 SD_API_ENDPOINT = os.environ.get("SD_API_ENDPOINT")
 CF_URL = os.environ.get("CF_URL")
@@ -46,6 +66,7 @@ REQUEST_TEMPLATE = json.loads("""{
 }""")
 
 dynamodb = boto3.resource('dynamodb')
+sqs = boto3.client('sqs')
 table = dynamodb.Table(DYNAMODB_TABLE_NAME)
 
 def load_template(template_name: str) -> str:
@@ -137,6 +158,48 @@ def get_task_status(task_id: str) -> dict:
     response = table.get_item(Key={'task_id': task_id})
     return response.get('Item')
 
+async def process_sqs_messages():
+    while True:
+        try:
+            response = sqs.receive_message(
+                QueueUrl=SQS_OUTPUT_QUEUE_URL,
+                MaxNumberOfMessages=10,
+                WaitTimeSeconds=20
+            )
+
+            messages = response.get('Messages', [])
+            for message in messages:
+                try:
+                    body = json.loads(message['Body'])
+                    payload = json.loads(body.get('Message', '{}'))
+                    logger.debug(payload)
+
+                    task_id = payload.get("id")
+                    status = payload.get("status")
+                    logger.info(f"Processing status update for {task_id}: {status}")
+
+                    if status == "running":
+                        update_task_status(task_id, status)
+                    elif status == "completed":
+                        if payload.get("image_url"):
+                            update_task_status(task_id, status, payload.get("image_url")[0])
+                    elif status == "failed":
+                        update_task_status(task_id, status)
+
+                    # Delete the message after processing
+                    sqs.delete_message(
+                        QueueUrl=SQS_OUTPUT_QUEUE_URL,
+                        ReceiptHandle=message['ReceiptHandle']
+                    )
+                except Exception as e:
+                    logger.error(f"Error processing message: {str(e)}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error polling SQS: {str(e)}")
+
+        await asyncio.sleep(1)  # Small delay between polling attempts
+
 @app.post("/generate_with_same_instance_type")
 async def generatee_with_same_instance_type(request: Request):
     data = await request.json()
@@ -159,7 +222,6 @@ async def generatee_with_same_instance_type(request: Request):
     logger.info(f"Task ID for Flux: {task_id_flux}")
 
     return {"task_id_sdxl": task_id_sdxl, "task_id_flux": task_id_flux}
-
 
 @app.post("/generate_with_same_model")
 async def generate_with_same_model(request: Request):
@@ -195,7 +257,6 @@ async def generate_with_same_model(request: Request):
 
     return response
 
-
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
     logger.info(f"Getting status for {task_id}")
@@ -203,38 +264,6 @@ async def get_status(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
-
-@app.post("/sns-endpoint")
-async def handle_sns_message(request: Request):
-    message = await request.json()
-
-    if message.get("Type") == "SubscriptionConfirmation":
-        logger.info("Confirming subscription")
-        subscription_url = message.get("SubscribeURL")
-        async with httpx.AsyncClient() as client:
-            await client.get(subscription_url)
-        return JSONResponse(content={"message": "Subscription confirmed"}, status_code=200)
-
-    if message.get("Type") == "Notification":
-        logger.info("Processing notification")
-        payload = json.loads(message.get("Message", "{}"))
-        logger.debug(payload)
-        task_id = payload.get("id")
-        status = payload.get("status")
-        if status == "running":
-            update_task_status(task_id, status)
-
-        if status == "completed":
-            if payload.get("image_url"):
-                update_task_status(task_id, status, payload.get("image_url")[0])
-
-        if status == "failed":
-            update_task_status(task_id, status)
-
-        return JSONResponse(content={"message": "Notification processed"}, status_code=200)
-
-    return JSONResponse(content={"message": "Unsupported message type"}, status_code=400)
-
 
 @app.get("/")
 async def health():
